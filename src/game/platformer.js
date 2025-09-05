@@ -102,7 +102,13 @@ export class PlatformerGame {
 
   _loop(current) {
     const now = current / 1000; let dt = this.lastTime ? now - this.lastTime : 0; if (dt > 0.25) dt = 0.25; this.lastTime = now; this.acc += dt;
-    while (this.acc >= this.fixed) { this.input.resetJusts(); this._update(this.fixed); this.acc -= this.fixed; }
+    while (this.acc >= this.fixed) {
+      // Process inputs that occurred since last tick inside update,
+      // then clear one-shot flags afterwards so we don't miss jumps.
+      this._update(this.fixed);
+      this.input.resetJusts();
+      this.acc -= this.fixed;
+    }
     this._render(); requestAnimationFrame((t) => this._loop(t));
   }
 
@@ -197,6 +203,10 @@ export class PlatformerGame {
         const x0 = s.x + i * PF_CONFIG.TILE - this.camera.x; const y0 = s.y - this.camera.y; const w = PF_CONFIG.TILE; const h = PF_CONFIG.TILE;
         ctx.beginPath(); ctx.moveTo(x0, y0 + h); ctx.lineTo(x0 + w/2, y0 + h - 16); ctx.lineTo(x0 + w, y0 + h); ctx.closePath(); ctx.fill();
         ctx.strokeStyle = '#5c1f1f'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x0, y0 + h); ctx.lineTo(x0 + w, y0 + h); ctx.stroke();
+        if (PF_CONFIG.SHOW_LABELS) {
+          ctx.fillStyle = '#000'; ctx.font = '10px Arial'; ctx.textAlign = 'center';
+          ctx.fillText('스파이크', x0 + w/2, y0 + h - 20);
+        }
       }
     }
     ctx.restore();
@@ -205,8 +215,12 @@ export class PlatformerGame {
       const sx = g.x - this.camera.x; const sy = g.y - this.camera.y;
       const grad = ctx.createLinearGradient(0, sy, 0, sy + g.h); grad.addColorStop(0, '#7CFC00'); grad.addColorStop(1, '#228B22');
       ctx.fillStyle = grad; ctx.fillRect(sx, sy, g.w, g.h);
+      if (PF_CONFIG.SHOW_LABELS) {
+        ctx.save(); ctx.globalAlpha = 1.0; ctx.fillStyle = '#052'; ctx.font = '12px Arial'; ctx.textAlign = 'center';
+        ctx.fillText('은행(피하기)', sx + g.w/2, sy + 14);
+        ctx.restore();
+      }
     }
     ctx.restore();
   }
 }
-

@@ -149,6 +149,11 @@ export class PF_PatrolEnemy extends PF_Enemy {
     ctx.fillStyle = '#FFF';
     ctx.fillRect(sx + 6, sy + 6, 4, 4);
     ctx.fillRect(sx + this.w - 10, sy + 6, 4, 4);
+    if (PF_CONFIG && PF_CONFIG.SHOW_LABELS) {
+      ctx.fillStyle = '#111';
+      ctx.font = '12px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('보행자', sx + this.w / 2, sy - 4);
+    }
   }
 }
-
