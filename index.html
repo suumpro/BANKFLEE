@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>서울 은행 서바이벌</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="game-container">
+        <div class="game-header">
+            <h1>서울 은행 서바이벌</h1>
+            <div class="game-info">
+                <span id="score">점수: 0</span>
+                <span id="health">체력: 100</span>
+            </div>
+        </div>
+        
+        <canvas id="gameCanvas" width="800" height="600"></canvas>
+        
+        <div class="game-controls">
+            <div class="instructions">
+                <p>방향키 또는 WASD: 이동 | 스페이스바: 점프</p>
+            </div>
+            <div class="buttons">
+                <button id="startBtn">게임 시작</button>
+                <button id="pauseBtn">일시정지</button>
+                <button id="restartBtn">다시시작</button>
+            </div>
+        </div>
+        
+        <div id="gameOverScreen" class="game-over hidden">
+            <h2>게임 오버!</h2>
+            <p>최종 점수: <span id="finalScore">0</span></p>
+            <button id="playAgainBtn">다시 플레이</button>
+        </div>
+    </div>
+
+    <script src="game.js"></script>
+</body>
+</html>

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.tauri.app/config/2.0.0",
+  "productName": "서울 은행 서바이벌",
+  "version": "1.0.0",
+  "identifier": "com.seoulginko.survival",
+  "build": {
+    "frontendDist": "./",
+    "devUrl": "http://localhost:3000"
+  },
+  "bundle": {
+    "active": true,
+    "category": "Game",
+    "copyright": "© 2025 Jamin Park",
+    "shortDescription": "서울 도심에서 은행열매를 피하는 서바이벌 게임",
+    "longDescription": "가을철 서울 도심을 배경으로 하늘에서 떨어지는 은행열매들을 피해 최대한 오래 버티는 아케이드 스타일의 서바이벌 게임입니다.",
+    "targets": ["dmg", "app"]
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "서울 은행 서바이벌",
+        "width": 900,
+        "height": 700,
+        "minWidth": 800,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+[package]
+name = "seoul-ginkgo-survival"
+version = "1.0.0"
+description = "서울 은행 서바이벌 - 가을철 서울 도심에서 은행열매를 피하는 게임"
+authors = ["Jamin Park"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.0", features = ["shell-open"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[features]
+# This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
+custom-protocol = ["tauri/custom-protocol"]
