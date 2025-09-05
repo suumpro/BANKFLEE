@@ -12,12 +12,18 @@
     <div class="game-container">
         <div class="game-header">
             <h1>서울 은행 서바이벌</h1>
+            <div id="profileInfo" class="profile-info">최고기록: <span id="bestScore">0</span> | 플레이어: <span id="playerName">Player</span> | 크레딧: <span id="profileCredits">0</span></div>
             <div class="game-info">
                 <span id="score">점수: 0</span>
                 <span id="health">체력: 100</span>
                 <span id="coins">코인: 0</span>
                 <span id="level">레벨: 1</span>
+                <span id="stage">스테이지: 1</span>
                 <span id="powerups">파워업: -</span>
+            </div>
+            <div class="bars">
+                <div class="bar"><div class="bar-label">경험치</div><div class="bar-track"><div id="xpBar" class="bar-fill"></div></div></div>
+                <div class="bar"><div class="bar-label">스테이지</div><div class="bar-track"><div id="stageBar" class="bar-fill stage"></div></div></div>
             </div>
         </div>
         
@@ -31,14 +37,46 @@
                 <button id="startBtn">게임 시작</button>
                 <button id="pauseBtn">일시정지</button>
                 <button id="restartBtn">다시시작</button>
+                <button id="shopBtn">상점</button>
+                <button id="muteBtn">음소거</button>
+                <label class="difficulty">난이도
+                    <select id="difficultySelect">
+                        <option value="easy">쉬움</option>
+                        <option value="normal" selected>보통</option>
+                        <option value="hard">어려움</option>
+                        <option value="insane">미친 난이도</option>
+                    </select>
+                </label>
             </div>
         </div>
         
         <div id="gameOverScreen" class="game-over hidden">
             <h2>게임 오버!</h2>
             <p>최종 점수: <span id="finalScore">0</span></p>
+            <div class="name-edit">
+                <label>이름: <input id="nameInput" type="text" maxlength="16" placeholder="Player" /></label>
+                <button id="saveNameBtn">이름 저장</button>
+            </div>
+            <div class="leaderboard">
+                <h3>리더보드 (상위 10)</h3>
+                <ol id="leaderboardList"></ol>
+            </div>
+            <p id="lastRunStats" class="last-run"></p>
+            <div class="shop">
+                <h3>상점 (영구 업그레이드)</h3>
+                <p>보유 크레딧: <span id="credits">0</span></p>
+                <div id="shopItems" class="shop-items"></div>
+                <p class="shop-hint">크레딧은 한 판에서 모은 코인으로 적립됩니다.</p>
+            </div>
             <button id="playAgainBtn">다시 플레이</button>
         </div>
+    </div>
+
+    <div id="shopOverlay" class="game-over hidden">
+        <h2>상점</h2>
+        <p>보유 크레딧: <span id="creditsShop">0</span></p>
+        <div id="shopItemsShop" class="shop-items"></div>
+        <button id="closeShopBtn">닫기</button>
     </div>
 
     <script type="module" src="src/main.js"></script>

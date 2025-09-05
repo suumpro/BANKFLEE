@@ -23,7 +23,19 @@ export const PF_CONFIG = {
   // Topdown jump
   TD_JUMP_SPEED: 360,
   TD_JUMP_GRAVITY: 1200,
-  TD_JUMP_COOLDOWN: 0.35
+  TD_JUMP_COOLDOWN: 0.35,
+  // Topdown balance knobs
+  TD_STAGE_DURATION: 30,       // seconds per stage
+  TD_DIFFICULTY_STAGE_STEP: 0.22, // +22% per stage
+  TD_DIFFICULTY_TIME_RATE: 0.02,  // +2% per sec up to cap
+  TD_DIFFICULTY_TIME_CAP: 0.8,    // up to +80% within stage
+  TD_XP_BASE: 100,
+  TD_XP_GROWTH: 1.5,
+  TD_XP_PER_SEC: 3,            // passive XP per second
+  TD_XP_PER_COIN: 4,           // extra XP per coin
+  TD_COIN_SPAWN_EVERY: 2.8,    // base seconds between coins
+  TD_COIN_MAGNET_ACCEL: 280,   // px/s^2 attraction
+  TD_COIN_MAGNET_SPEED: 220    // px/s clamp for coins when magnetized
 };
 
 export const PF_STATE = {

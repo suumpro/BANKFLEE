@@ -1,6 +1,7 @@
 import { PF_CONFIG, PF_STATE, aabb } from './constants.js';
 import { AudioManager } from '../engine/audio.js';
 import { PF_Input } from '../engine/input.js';
+import { loadProfile, recordRun, updatePlayerName, addCredits, getUpgradesState, purchaseUpgrade, UPGRADE_DEFS, getDifficulty, setDifficulty, getSettings, setMuted } from '../engine/storage.js';
 
 class TD_Player {
   constructor(x, y) {
@@ -9,6 +10,8 @@ class TD_Player {
     // topdown jump state
     this.z = 0; this.vz = 0; this.jumpCD = 0;
     this._justJump = false; this._justLand = false;
+    // scaling stats from level-ups
+    this.statSpeedMul = 1.0;
     // power-ups
     this.powerUps = {
       mask: { active: false, timer: 0 },
@@ -79,7 +82,7 @@ class TD_Player {
       case 'umbrella': this.powerUps.umbrella.active = true; this.powerUps.umbrella.uses += 1; break;
     }
   }
-  speedMultiplier() { return this.powerUps.boots.active ? 1.3 : 1.0; }
+  speedMultiplier() { return (this.powerUps.boots.active ? 1.3 : 1.0) * (this.statSpeedMul || 1.0); }
   updatePowerUpTimers(dt) {
     const dms = dt * 1000;
     if (this.powerUps.mask.active) { this.powerUps.mask.timer -= dms; if (this.powerUps.mask.timer <= 0) this.powerUps.mask.active = false; }
@@ -188,19 +191,59 @@ class TD_Particle {
   }
 }
 
+class TD_Coin {
+  constructor(x, y) { this.w = 14; this.h = 14; this.x = x - this.w/2; this.y = y - this.h/2; this.spin = Math.random()*Math.PI*2; this.vx = 0; this.vy = 0; }
+  update(dt, scroll, player, magnetRadius=0) {
+    this.spin += dt * 6;
+    // magnet attraction
+    if (player && magnetRadius > 0) {
+      const cx = this.x + this.w/2, cy = this.y + this.h/2;
+      const px = player.x + player.w/2, py = player.y + player.h/2;
+      const dx = px - cx, dy = py - cy;
+      const dist = Math.hypot(dx, dy);
+      if (dist > 0 && dist < magnetRadius) {
+        const ax = (dx / dist) * PF_CONFIG.TD_COIN_MAGNET_ACCEL;
+        const ay = (dy / dist) * PF_CONFIG.TD_COIN_MAGNET_ACCEL;
+        this.vx += ax * dt; this.vy += ay * dt;
+        const sp = Math.hypot(this.vx, this.vy);
+        const maxSp = PF_CONFIG.TD_COIN_MAGNET_SPEED;
+        if (sp > maxSp) { this.vx = this.vx / sp * maxSp; this.vy = this.vy / sp * maxSp; }
+      }
+    }
+    // integrate + scroll
+    this.x += this.vx * dt; this.y += (this.vy + scroll) * dt;
+  }
+  render(ctx) {
+    const sx = Math.floor(this.x); const sy = Math.floor(this.y + Math.sin(this.spin)*1.5);
+    ctx.save();
+    ctx.fillStyle = '#FFD700'; ctx.beginPath(); ctx.arc(sx + this.w/2, sy + this.h/2, this.w/2, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = '#FFF'; ctx.lineWidth = 2; ctx.stroke(); ctx.restore();
+  }
+}
+
 export class TopdownGame {
   constructor() {
     this.canvas = document.getElementById('gameCanvas');
     this.ctx = this.canvas.getContext('2d');
     this.state = PF_STATE.MENU;
     this.input = new PF_Input();
-    this.health = 100; this.score = 0; this.iframes = 0;
+    this.health = 100; this.maxHealth = 100; this.score = 0; this.iframes = 0;
+    this.level = 1; this.xp = 0; this.xpToNext = PF_CONFIG.TD_XP_BASE; this.stage = 1; this.stageTime = 0; this.stageDuration = PF_CONFIG.TD_STAGE_DURATION;
+    this.coins = 0;
+    this.xpMul = 1.0;
     this.player = new TD_Player(PF_CONFIG.WIDTH/2 - 13, PF_CONFIG.HEIGHT*0.7);
-    this.pedestrians = []; this.banks = []; this.powerUps = []; this.particles = [];
-    this.tSpawnPed = 0; this.tSpawnBank = 0; this.tSpawnPU = 2.0; this.trailT = 0;
+    this.pedestrians = []; this.banks = []; this.powerUps = []; this.coinsArr = []; this.particles = [];
+    this.tSpawnPed = 0; this.tSpawnBank = 0; this.tSpawnPU = 2.0; this.tSpawnCoin = 1.0; this.trailT = 0;
     this.scroll = PF_CONFIG.TD_SCROLL_SPEED;
     this.lastTime = 0; this.acc = 0; this.fixed = 1/60; this.elapsed = 0;
     this.audio = new AudioManager();
+    this.profile = loadProfile();
+    this.difficultyKey = getDifficulty();
+    this.difficulty = this._difficultyPreset(this.difficultyKey);
+    // apply audio setting
+    const settings = getSettings();
+    this.audio.mute(!!settings.muted);
+    this.bannerStageT = 0; this.bannerLevelT = 0;
     this._bindUI(); this._updateHUD();
     this._renderOnceMenu();
     requestAnimationFrame((t) => this._loop(t));
@@ -211,24 +254,83 @@ export class TopdownGame {
     document.getElementById('pauseBtn').addEventListener('click', () => this.togglePause());
     document.getElementById('restartBtn').addEventListener('click', () => this.restart());
     document.getElementById('playAgainBtn').addEventListener('click', () => { resumeAudio(); this.restart(); this.start(); });
+    const shopBtn = document.getElementById('shopBtn'); if (shopBtn) shopBtn.addEventListener('click', () => this._openShop());
+    const muteBtn = document.getElementById('muteBtn'); if (muteBtn) { muteBtn.textContent = settings.muted ? '음소거 해제' : '음소거'; muteBtn.addEventListener('click', () => this._toggleMute(muteBtn)); }
+    const closeShop = document.getElementById('closeShopBtn'); if (closeShop) closeShop.addEventListener('click', () => this._closeShop());
+    const diffSel = document.getElementById('difficultySelect');
+    if (diffSel) {
+      diffSel.value = this.difficultyKey || 'normal';
+      diffSel.addEventListener('change', (e) => {
+        const v = e.target.value;
+        this.difficultyKey = setDifficulty(v);
+        this.difficulty = this._difficultyPreset(this.difficultyKey);
+      });
+    }
+    const nameInput = document.getElementById('nameInput');
+    const saveBtn = document.getElementById('saveNameBtn');
+    if (nameInput) nameInput.value = this.profile.name || 'Player';
+    if (saveBtn) saveBtn.addEventListener('click', () => {
+      const v = document.getElementById('nameInput').value;
+      const n = updatePlayerName(v);
+      this.profile.name = n; this._updateProfileUI();
+    });
+    this._updateProfileUI(); this._renderShop();
     window.addEventListener('keydown', resumeAudio, { once: true });
   }
-  start() { this.state = PF_STATE.PLAYING; this.health = 100; this.score = 0; this.iframes = 0; this.pedestrians = []; this.banks = []; this.player.x = PF_CONFIG.WIDTH/2 - 13; this.player.y = PF_CONFIG.HEIGHT*0.7; document.getElementById('gameOverScreen').classList.add('hidden'); const t = document.querySelector('#gameOverScreen h2'); if (t) t.textContent='게임 오버!'; this._updateHUD(); }
+  start() {
+    this.state = PF_STATE.PLAYING;
+    this.level = 1; this.xp = 0; this.xpToNext = PF_CONFIG.TD_XP_BASE; this.stage = 1; this.stageTime = 0; this.elapsed = 0; this.bannerStageT = 1.8; this.bannerLevelT = 0;
+    this.player.statSpeedMul = 1.0; this.xpMul = 1.0;
+    // apply permanent upgrades
+    const st = getUpgradesState();
+    const up = {}; st.items.forEach(i => up[i.key] = i.level);
+    this.player.statSpeedMul *= (1 + (up.speed || 0) * 0.02);
+    this.maxHealth = 100 + (up.maxhp || 0) * 10; this.health = this.maxHealth;
+    const umb = (up.umbrella || 0); this.player.powerUps.umbrella.active = umb > 0; this.player.powerUps.umbrella.uses = umb;
+    this.xpMul = 1 + (up.xpmul || 0) * 0.10;
+    this.magnetRadius = 40 + (up.magnet || 0) * 6; // base 40px + 6px/level
+    this.coins = 0; this.score = 0; this.iframes = 0;
+    this.pedestrians = []; this.banks = []; this.powerUps = []; this.coinsArr = []; this.particles = [];
+    this.player.x = PF_CONFIG.WIDTH/2 - 13; this.player.y = PF_CONFIG.HEIGHT*0.7; this.tSpawnPed = 0; this.tSpawnBank = 0; this.tSpawnPU = 2.0; this.tSpawnCoin = PF_CONFIG.TD_COIN_SPAWN_EVERY * 0.8;
+    document.getElementById('gameOverScreen').classList.add('hidden'); const t = document.querySelector('#gameOverScreen h2'); if (t) t.textContent='게임 오버!'; this._updateHUD();
+  }
   togglePause() { if (this.state === PF_STATE.PLAYING) this.state = PF_STATE.PAUSED; else if (this.state === PF_STATE.PAUSED) this.state = PF_STATE.PLAYING; }
   restart() { this.start(); }
-  gameOver() { this.state = PF_STATE.GAME_OVER; document.getElementById('finalScore').textContent = this.score; document.getElementById('gameOverScreen').classList.remove('hidden'); }
+  gameOver() {
+    this.state = PF_STATE.GAME_OVER;
+    document.getElementById('finalScore').textContent = Math.floor(this.score);
+    // record and refresh UI
+    this.profile = recordRun({ score: this.score, stage: this.stage, level: this.level, coins: this.coins, difficulty: this.difficultyKey });
+    // award credits equal to coins collected
+    addCredits(this.coins);
+    this._updateProfileUI();
+    this._renderLeaderboard(); this._renderShop();
+    const last = document.getElementById('lastRunStats');
+    if (last) last.textContent = `이번 판: Stage ${this.stage}, Lv.${this.level}, ${this.coins}코인, 생존 ${Math.floor(this.elapsed)}초`;
+    this.audio.sfx('gameover');
+    document.getElementById('gameOverScreen').classList.remove('hidden');
+  }
 
   _updateHUD() {
     const scoreEl = document.getElementById('score');
     const healthEl = document.getElementById('health');
     const coinsEl = document.getElementById('coins');
     const levelEl = document.getElementById('level');
+    const stageEl = document.getElementById('stage');
     const powEl = document.getElementById('powerups');
     if (scoreEl) scoreEl.textContent = `점수: ${Math.floor(this.score)}`;
-    if (healthEl) healthEl.textContent = `체력: ${Math.ceil(this.health)}`;
-    if (coinsEl) coinsEl.textContent = `코인: -`;
-    if (levelEl) levelEl.textContent = `레벨: -`;
+    if (healthEl) healthEl.textContent = `체력: ${Math.ceil(this.health)}/${Math.ceil(this.maxHealth)}`;
+    if (coinsEl) coinsEl.textContent = `코인: ${this.coins}`;
+    if (stageEl) stageEl.textContent = `스테이지: ${this.stage}`;
+    if (levelEl) levelEl.textContent = `레벨: ${this.level}`;
     if (powEl) powEl.textContent = `파워업: ${this._powerupText()}`;
+    const bestEl = document.getElementById('bestScore'); if (bestEl) bestEl.textContent = this.profile?.bestScore ?? 0;
+    const profCred = document.getElementById('profileCredits'); if (profCred) profCred.textContent = (this.profile?.credits ?? loadProfile().credits) || 0;
+    // progress bars
+    const xpPct = Math.max(0, Math.min(1, (this.xp || 0) / (this.xpToNext || 1)));
+    const xpBar = document.getElementById('xpBar'); if (xpBar) xpBar.style.width = `${Math.floor(xpPct * 100)}%`;
+    const stagePct = Math.max(0, Math.min(1, (this.stageTime || 0) / (this.stageDuration || 1)));
+    const stBar = document.getElementById('stageBar'); if (stBar) stBar.style.width = `${Math.floor(stagePct * 100)}%`;
   }
 
   _powerupText() {
@@ -248,12 +350,21 @@ export class TopdownGame {
 
   _update(dt) {
     if (this.state !== PF_STATE.PLAYING) return;
-    this.elapsed += dt;
-    // difficulty scaling
-    const diff = 1 + Math.min(1.2, this.elapsed * 0.06); // up to ~2.2x in ~20s
-    this.scroll = PF_CONFIG.TD_SCROLL_SPEED * diff;
-    // distance-based score
-    this.score += this.scroll * dt * 0.1; // small increment
+    this.elapsed += dt; this.stageTime += dt;
+    if (this.bannerStageT > 0) this.bannerStageT = Math.max(0, this.bannerStageT - dt);
+    if (this.bannerLevelT > 0) this.bannerLevelT = Math.max(0, this.bannerLevelT - dt);
+    // stage advance
+    if (this.stageTime >= this.stageDuration) {
+      this.stage += 1; this.stageTime = 0; this.bannerStageT = 1.8; this.coins += 10; this._spawnStageBurst();
+    }
+    // difficulty scaling by time + stage (tuned)
+    const stageMul = 1 + (this.stage - 1) * PF_CONFIG.TD_DIFFICULTY_STAGE_STEP;
+    const timeMul = 1 + Math.min(PF_CONFIG.TD_DIFFICULTY_TIME_CAP, this.stageTime * PF_CONFIG.TD_DIFFICULTY_TIME_RATE);
+    const diff = stageMul * timeMul * (this.difficulty?.hazardScale || 1);
+    this.scroll = PF_CONFIG.TD_SCROLL_SPEED * (this.difficulty?.scrollScale || 1) * (stageMul * timeMul);
+    // score + xp over time
+    this.score += this.scroll * dt * 0.1 * (this.difficulty?.scoreMul || 1);
+    this._gainXP(PF_CONFIG.TD_XP_PER_SEC * dt);
     // update player
     const wasAir = this.player.isAirborne();
     this.player.update(dt, this.input);
@@ -264,7 +375,7 @@ export class TopdownGame {
     if (this.player.isAirborne()) { this.trailT -= dt; if (this.trailT <= 0) { this._spawnTrail(); this.trailT = 0.06; } }
     if (this.player.consumeJustLand()) { this._spawnLandBurst(); this.audio.sfx('land'); }
     // spawn
-    this.tSpawnPed -= dt; this.tSpawnBank -= dt;
+    this.tSpawnPed -= dt; this.tSpawnBank -= dt; this.tSpawnCoin -= dt;
     if (this.tSpawnPed <= 0) { this._spawnPed();
       const pedBase = PF_CONFIG.TD_SPAWN_PEDESTRIAN_EVERY;
       const pedInt = Math.max(0.35, pedBase / diff) * (0.7 + Math.random()*0.6);
@@ -272,20 +383,23 @@ export class TopdownGame {
     }
     if (this.tSpawnBank <= 0) { this._spawnBank();
       const bankBase = PF_CONFIG.TD_SPAWN_BANK_EVERY;
-      const bankInt = Math.max(0.6, bankBase / (0.7 + (diff-1))) * (0.8 + Math.random()*0.7);
+      const bankInt = Math.max(0.7, bankBase / diff) * (0.8 + Math.random()*0.7);
       this.tSpawnBank = bankInt;
     }
+    if (this.tSpawnCoin <= 0) { this._spawnCoin(); this.tSpawnCoin = Math.max(1.6, (PF_CONFIG.TD_COIN_SPAWN_EVERY / (this.difficulty?.coinScale || 1)) / Math.sqrt(diff)) * (0.9 + Math.random()*0.4); }
     this.tSpawnPU -= dt; if (this.tSpawnPU <= 0) { this._spawnPowerUp(); this.tSpawnPU = 6 + Math.random()*4; }
     // move objs
     for (const p of this.pedestrians) p.update(dt, this.scroll);
     for (const b of this.banks) b.update(dt, this.scroll * 0.85);
     for (const pu of this.powerUps) pu.update(dt);
+    for (const c of this.coinsArr) c.update(dt, this.scroll, this.player, this.magnetRadius || 0);
     // particles
     for (const pr of this.particles) pr.update(dt, this.scroll);
     // cull
     this.pedestrians = this.pedestrians.filter(p => p.y < PF_CONFIG.HEIGHT + 60);
     this.banks = this.banks.filter(b => b.y < PF_CONFIG.HEIGHT + 10);
     this.powerUps = this.powerUps.filter(p => p.y < PF_CONFIG.HEIGHT + 40);
+    this.coinsArr = this.coinsArr.filter(c => c.y < PF_CONFIG.HEIGHT + 20);
     this.particles = this.particles.filter(p => p.life > 0);
     // collisions
     if (this.iframes > 0) this.iframes = Math.max(0, this.iframes - dt);
@@ -314,6 +428,13 @@ export class TopdownGame {
         this.player.applyPowerUp(pu.type); this.powerUps.splice(i, 1); this.score += 20; this.audio.sfx('powerup'); this._updateHUD();
       }
     }
+    // coins
+    for (let i = this.coinsArr.length - 1; i >= 0; i--) {
+      const c = this.coinsArr[i];
+      if (aabb(this.player.x, this.player.y, this.player.w, this.player.h, c.x, c.y, c.w, c.h)) {
+        this.coins += 1; this._gainXP(PF_CONFIG.TD_XP_PER_COIN); this.score += 5; this.coinsArr.splice(i, 1); this.audio.sfx('powerup');
+      }
+    }
     // end
     this._updateHUD();
   }
@@ -326,6 +447,14 @@ export class TopdownGame {
       this.iframes = Math.max(this.iframes, 0.4); return;
     }
     this.health = Math.max(0, this.health - amount); if (this.health <= 0) this.gameOver();
+  }
+
+  _gainXP(n) {
+    this.xp += n * (this.xpMul || 1);
+    while (this.xp >= this.xpToNext) {
+      this.xp -= this.xpToNext; this.level += 1; this.bannerLevelT = 1.4; this.player.statSpeedMul *= 1.03; this.maxHealth += 10; this.health = Math.min(this.maxHealth, this.health + 10);
+      this.xpToNext = Math.floor(PF_CONFIG.TD_XP_BASE * Math.pow(PF_CONFIG.TD_XP_GROWTH, this.level - 1));
+    }
   }
 
   _spawnPed() {
@@ -363,6 +492,12 @@ export class TopdownGame {
     this.powerUps.push(new TD_PowerUp(x, y, type));
   }
 
+  _spawnCoin() {
+    const x = 60 + Math.random() * (PF_CONFIG.WIDTH - 120);
+    const y = -12;
+    this.coinsArr.push(new TD_Coin(x, y));
+  }
+
   _spawnJumpBurst() {
     const cx = this.player.x + this.player.w/2; const cy = this.player.y + this.player.h - 4;
     for (let i = 0; i < 10; i++) {
@@ -385,6 +520,14 @@ export class TopdownGame {
     const a = Math.PI/2 + (Math.random()*0.6 - 0.3);
     const s = 30 + Math.random()*30; const life = 0.25 + Math.random()*0.15; const size = 1.8 + Math.random()*1.2;
     this.particles.push(new TD_Particle(cx, cy, a, s, life, size, '#777'));
+  }
+  _spawnStageBurst() {
+    const cx = PF_CONFIG.WIDTH/2; const cy = PF_CONFIG.HEIGHT*0.35;
+    for (let i = 0; i < 18; i++) {
+      const a = (Math.PI*2) * Math.random();
+      const s = 160 + Math.random()*120; const life = 0.4 + Math.random()*0.2; const size = 2 + Math.random()*2;
+      this.particles.push(new TD_Particle(cx, cy, a, s, life, size, '#FFD700'));
+    }
   }
 
   _drawBackground() {
@@ -413,10 +556,101 @@ export class TopdownGame {
     for (const b of this.banks) b.render(this.ctx);
     for (const p of this.pedestrians) p.render(this.ctx);
     for (const pu of this.powerUps) pu.render(this.ctx);
+    for (const c of this.coinsArr) c.render(this.ctx);
     this.player.render(this.ctx);
+    // banners
+    if (this.bannerStageT > 0) {
+      const a = Math.min(1, this.bannerStageT / 1.0);
+      this._centerText(`스테이지 ${this.stage}`, 40, `rgba(255,255,255,${a})`, '#00000066');
+    }
+    if (this.bannerLevelT > 0) {
+      const a = Math.min(1, this.bannerLevelT / 0.9);
+      this._centerText(`레벨 업! Lv.${this.level}`, 34, `rgba(255,215,0,${a})`, '#00000066');
+    }
     if (this.state === PF_STATE.PAUSED) { this._overlay('일시정지', 48); }
     else if (this.state === PF_STATE.MENU) { this._overlay('시작 버튼을 눌러주세요!', 36); }
     this.ctx.textAlign = 'left';
   }
   _overlay(text, size) { this.ctx.fillStyle = 'rgba(0,0,0,0.5)'; this.ctx.fillRect(0,0,PF_CONFIG.WIDTH, PF_CONFIG.HEIGHT); this.ctx.fillStyle = 'white'; this.ctx.font = `${size}px Arial`; this.ctx.textAlign = 'center'; this.ctx.fillText(text, PF_CONFIG.WIDTH/2, PF_CONFIG.HEIGHT/2); }
+  _centerText(text, size, fill='white', shadow='rgba(0,0,0,0.4)') {
+    this.ctx.save(); this.ctx.font = `${size}px Arial`; this.ctx.textAlign = 'center';
+    this.ctx.fillStyle = shadow; this.ctx.fillText(text, PF_CONFIG.WIDTH/2+2, PF_CONFIG.HEIGHT*0.3+2);
+    this.ctx.fillStyle = fill; this.ctx.fillText(text, PF_CONFIG.WIDTH/2, PF_CONFIG.HEIGHT*0.3);
+    this.ctx.restore();
+  }
+
+  _renderLeaderboard() {
+    const list = document.getElementById('leaderboardList'); if (!list) return;
+    const p = this.profile || loadProfile();
+    const fmtDate = (ms) => { try { const d = new Date(ms); return `${d.getMonth()+1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')}`; } catch (_) { return ''; } };
+    list.innerHTML = '';
+    (p.leaderboard || []).forEach((r) => {
+      const li = document.createElement('li');
+      const diff = (r.difficulty || 'normal');
+      const diffLabel = diff === 'easy' ? '쉬움' : diff === 'hard' ? '어려움' : diff === 'insane' ? '미친' : '보통';
+      li.textContent = `${p.name} — ${r.score}점, Stage ${r.stage}, Lv.${r.level}, ${r.coins}코인, ${diffLabel} • ${fmtDate(r.date)}`;
+      list.appendChild(li);
+    });
+  }
+  _updateProfileUI() {
+    const bestEl = document.getElementById('bestScore'); if (bestEl) bestEl.textContent = this.profile?.bestScore ?? 0;
+    const nameEl = document.getElementById('playerName'); if (nameEl) nameEl.textContent = this.profile?.name ?? 'Player';
+    const creditsEl = document.getElementById('credits'); if (creditsEl) creditsEl.textContent = (this.profile?.credits ?? loadProfile().credits) || 0;
+    const creditsEl2 = document.getElementById('creditsShop'); if (creditsEl2) creditsEl2.textContent = (this.profile?.credits ?? loadProfile().credits) || 0;
+  }
+
+  _renderShop() {
+    const renderInto = (wrapId, creditsId) => {
+      const wrap = document.getElementById(wrapId); if (!wrap) return;
+      wrap.innerHTML = '';
+      const st = getUpgradesState();
+      const creditsEl = document.getElementById(creditsId); if (creditsEl) creditsEl.textContent = st.credits || 0;
+      st.items.forEach(it => {
+        const row = document.createElement('div'); row.className = 'shop-item';
+        const info = document.createElement('div'); info.className = 'info';
+        const title = document.createElement('div'); title.className = 'title'; title.textContent = `${it.title} (Lv.${it.level}/${it.max})`;
+        const desc = document.createElement('div'); desc.className = 'desc'; desc.textContent = it.desc;
+        const meta = document.createElement('div'); meta.className = 'meta'; meta.textContent = it.level >= it.max ? '최대 레벨' : `가격: ${it.cost} 크레딧`;
+        info.appendChild(title); info.appendChild(desc); info.appendChild(meta);
+        const btn = document.createElement('button');
+        btn.textContent = it.level >= it.max ? '구매 불가' : `구매`;
+        btn.disabled = it.level >= it.max || (st.credits || 0) < it.cost;
+        btn.addEventListener('click', () => {
+          const res = purchaseUpgrade(it.key);
+          if (res.ok) { this.profile = res.profile; this._updateProfileUI(); this._renderShop(); }
+        });
+        row.appendChild(info); row.appendChild(btn); wrap.appendChild(row);
+      });
+    };
+    renderInto('shopItems', 'credits');
+    renderInto('shopItemsShop', 'creditsShop');
+  }
+
+  _openShop() {
+    const el = document.getElementById('shopOverlay'); if (!el) return;
+    // Pause if currently playing
+    if (this.state === PF_STATE.PLAYING) this.state = PF_STATE.PAUSED;
+    this._renderShop();
+    el.classList.remove('hidden');
+  }
+  _closeShop() {
+    const el = document.getElementById('shopOverlay'); if (!el) return;
+    el.classList.add('hidden');
+  }
+
+  _difficultyPreset(key) {
+    switch (key) {
+      case 'easy': return { key, hazardScale: 0.85, scrollScale: 0.9, coinScale: 1.1, scoreMul: 0.85 };
+      case 'hard': return { key, hazardScale: 1.2, scrollScale: 1.15, coinScale: 0.95, scoreMul: 1.2 };
+      case 'insane': return { key, hazardScale: 1.45, scrollScale: 1.3, coinScale: 0.9, scoreMul: 1.5 };
+      case 'normal':
+      default: return { key: 'normal', hazardScale: 1.0, scrollScale: 1.0, coinScale: 1.0, scoreMul: 1.0 };
+    }
+  }
+
+  _toggleMute(btn) {
+    const newMuted = !(getSettings().muted);
+    setMuted(newMuted); this.audio.mute(newMuted);
+    if (btn) btn.textContent = newMuted ? '음소거 해제' : '음소거';
+  }
 }
