@@ -74,6 +74,81 @@
   - 충돌/피격 소리
   - 게임오버 음악
 
+---
+
+# Platformer 전환용 에셋 체크리스트
+
+## 타일/타일맵
+- 타일 크기: 32x32(px)
+- 레이어: 배경(장식), 솔리드(충돌), 해저드(스파이크/가스)
+- 필요 타일들:
+  - 지면 상단/내부/측면, 떠있는 발판
+  - 스파이크 타일(상단 삼각형), 가스 배출구 데칼(장식)
+  - 장식: 은행나무, 표지판, 서울 거리 요소
+
+## 패럴랙스 배경
+- 도시 스카이라인 레이어 2~3장 (느린 스크롤)
+- 하늘 그라디언트(또는 큰 고정 배경)
+
+## 플레이어/적 스프라이트(기본 프록시 가능)
+- 플레이어(26x30 전후): 대기/달리기/점프/피격 최소 프레임
+- 적(24x24): 패트롤 적 걷기 2프레임, 피격/소멸 1프레임
+
+## 수집품/파워업/골
+- 코인(16x16) 2프레임 깜박임
+- 파워업(24x24): 부츠, 우산, 마스크, 방독면 아이콘
+- 골(깃발): 기둥/깃발 2~3 프레임 바람 애니메이션(선택)
+
+## UI/HUD
+- 코인 아이콘, 체력바(HP 채움형), 파워업 남은 시간/횟수 배지
+- 일시정지/클리어/게임오버 패널 백그라운드
+
+## SFX/BGM 매핑
+- 점프, 스톰프(적 밟기), 코인 획득, 파워업 획득, 피격(가스/스파이크/적), 깃발 도달, 레벨 클리어, 게임오버
+- BGM: 스테이지 BGM(루프), 클리어 지글
+
+## 파일 구조 제안(Platformer 확장)
+```
+/assets
+  /images
+    /tiles
+      - ground_*.png
+      - platform_*.png
+      - spike.png
+      - gas_decal.png
+    /parallax
+      - skyline_layer1.png
+      - skyline_layer2.png
+    /entities
+      - player_run_*.png
+      - player_jump.png
+      - enemy_patrol_*.png
+      - coin_*.png
+      - power_boots.png
+      - power_umbrella.png
+      - power_mask.png
+      - power_gasmask.png
+      - goal_flag.png
+    /ui
+      - hud_bar.png
+      - hud_icons.png
+      - overlay_panels.png
+  /audio
+    /music
+      - stage_loop.mp3
+      - level_clear.mp3
+    /sfx
+      - jump.wav
+      - stomp.wav
+      - coin.wav
+      - powerup.wav
+      - hurt.wav
+      - goal.wav
+      - gameover.wav
+```
+
+주의: 현재 코드는 모든 그래픽을 캔버스 도형으로 임시 렌더합니다. 위 에셋이 준비되면, 스프라이트 로더를 추가해 교체하면 됩니다.
+
 ## 7. 추가 게임 요소 (미래 확장)
 **필요한 에셋**:
 - 파워업 아이템들:

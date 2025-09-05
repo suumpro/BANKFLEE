@@ -998,7 +998,983 @@ class PowerUp {
     }
 }
 
-// 게임 시작
+// =====================
+// 플랫폼어(마리오-스타일) 구현
+// =====================
+
+// 플랫폼어 설정
+const PF_CONFIG = {
+    WIDTH: 800,
+    HEIGHT: 600,
+    TILE: 32,
+    GRAVITY: 2000, // px/s^2
+    RUN_ACCEL: 4000, // px/s^2
+    RUN_FRICTION: 5000, // px/s^2 (지면에서 감속)
+    AIR_FRICTION: 800, // 공중에서 감속
+    MAX_RUN_SPEED: 280, // px/s (~8.75 tiles/s)
+    JUMP_SPEED: 650, // px/s
+    COYOTE_TIME: 0.10, // s
+    JUMP_BUFFER: 0.12 // s
+};
+
+const PF_STATE = {
+    MENU: 'menu',
+    PLAYING: 'playing',
+    PAUSED: 'paused',
+    GAME_OVER: 'game_over',
+    LEVEL_COMPLETE: 'level_complete'
+};
+
+class PF_Input {
+    constructor() {
+        this.down = new Set();
+        this.justDown = new Set();
+        this.justUp = new Set();
+
+        document.addEventListener('keydown', (e) => {
+            const k = e.key.toLowerCase();
+            if (!this.down.has(k)) this.justDown.add(k);
+            this.down.add(k);
+            if (e.key === ' ') e.preventDefault();
+        });
+        document.addEventListener('keyup', (e) => {
+            const k = e.key.toLowerCase();
+            if (this.down.has(k)) this.justUp.add(k);
+            this.down.delete(k);
+        });
+    }
+    isDown(k) { return this.down.has(k); }
+    isLeft() { return this.isDown('arrowleft') || this.isDown('a'); }
+    isRight() { return this.isDown('arrowright') || this.isDown('d'); }
+    jumpDown() { return this.justDown.has(' ') || this.justDown.has('w') || this.justDown.has('arrowup'); }
+    jumpUp() { return this.justUp.has(' ') || this.justUp.has('w') || this.justUp.has('arrowup'); }
+    resetJusts() { this.justDown.clear(); this.justUp.clear(); }
+}
+
+class PF_TileMap {
+    constructor(data) {
+        this.tileSize = data.tileSize || PF_CONFIG.TILE;
+        this.width = data.width;  // in tiles
+        this.height = data.height; // in tiles
+        this.solids = data.layers?.solids || [];
+        this.hazards = data.layers?.hazards || [];
+
+        if (!this.solids || this.solids.length === 0) {
+            this._buildDefaultGround();
+        }
+    }
+
+    _emptyGrid() {
+        const g = new Array(this.height);
+        for (let y = 0; y < this.height; y++) {
+            g[y] = new Array(this.width).fill(0);
+        }
+        return g;
+    }
+
+    _buildDefaultGround() {
+        // 기본 지형: 하단 3줄은 땅, 약간의 떠있는 플랫폼
+        this.solids = this._emptyGrid();
+        for (let y = this.height - 3; y < this.height; y++) {
+            for (let x = 0; x < this.width; x++) this.solids[y][x] = 1;
+        }
+        // 간단 플랫폼들
+        const plats = [
+            { x: 8, y: 12, w: 6 },
+            { x: 22, y: 10, w: 4 },
+            { x: 35, y: 8, w: 5 },
+            { x: 48, y: 12, w: 6 },
+            { x: 66, y: 9, w: 5 },
+            { x: 80, y: 11, w: 7 },
+            { x: 96, y: 10, w: 5 }
+        ];
+        plats.forEach(p => {
+            for (let i = 0; i < p.w; i++) {
+                if (p.x + i < this.width && p.y < this.height) this.solids[p.y][p.x + i] = 1;
+            }
+        });
+    }
+
+    isSolidTile(tx, ty) {
+        if (tx < 0 || ty < 0 || tx >= this.width || ty >= this.height) return true; // 바깥은 벽
+        return this.solids[ty]?.[tx] === 1;
+    }
+
+    render(ctx, camera) {
+        const ts = this.tileSize;
+        const startX = Math.max(0, Math.floor(camera.x / ts) - 1);
+        const endX = Math.min(this.width, Math.ceil((camera.x + camera.w) / ts) + 1);
+        const startY = Math.max(0, Math.floor(camera.y / ts) - 1);
+        const endY = Math.min(this.height, Math.ceil((camera.y + camera.h) / ts) + 1);
+
+        // 타일 색상
+        ctx.fillStyle = '#5c7c3f'; // 녹색 땅
+        for (let ty = startY; ty < endY; ty++) {
+            for (let tx = startX; tx < endX; tx++) {
+                if (this.isSolidTile(tx, ty)) {
+                    const sx = tx * ts - camera.x;
+                    const sy = ty * ts - camera.y;
+                    ctx.fillRect(sx, sy, ts, ts);
+                }
+            }
+        }
+    }
+}
+
+class PF_Camera {
+    constructor(viewW, viewH, map) {
+        this.w = viewW;
+        this.h = viewH;
+        this.map = map;
+        this.x = 0;
+        this.y = 0;
+        this.deadZoneX = viewW * 0.35;
+    }
+    follow(px, py) {
+        // 수평 추적만 우선
+        const targetX = px - this.deadZoneX;
+        this.x = Math.max(0, Math.min(targetX, this.map.width * this.map.tileSize - this.w));
+        this.y = 0; // 수직은 고정 (v1)
+    }
+}
+
+class PF_Coin {
+    constructor(x, y) {
+        this.w = 16; this.h = 16;
+        this.x = x - this.w / 2; // center to top-left
+        this.y = y - this.h / 2;
+        this.collected = false;
+    }
+    render(ctx, camera) {
+        const sx = Math.floor(this.x - camera.x);
+        const sy = Math.floor(this.y - camera.y);
+        ctx.save();
+        ctx.fillStyle = '#FFD700';
+        ctx.beginPath();
+        ctx.arc(sx + this.w/2, sy + this.h/2, this.w/2, 0, Math.PI*2);
+        ctx.fill();
+        ctx.strokeStyle = '#FFF';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.restore();
+    }
+}
+
+class PF_Goal {
+    constructor(x, y, w, h) {
+        // x,y는 상단-좌표(타일 기준)로 저장
+        this.x = x; this.y = y; this.w = w; this.h = h;
+    }
+    render(ctx, camera) {
+        const sx = Math.floor(this.x - camera.x);
+        const sy = Math.floor(this.y - camera.y);
+        // 간단 깃발 (상단에서 아래로)
+        ctx.save();
+        ctx.fillStyle = '#654321';
+        ctx.fillRect(sx + this.w - 6, sy, 6, this.h + 8); // 기둥
+        ctx.fillStyle = '#FF3B3B';
+        ctx.beginPath();
+        ctx.moveTo(sx + this.w - 6, sy + 6);
+        ctx.lineTo(sx + this.w - 6 - this.w * 0.8, sy + 14);
+        ctx.lineTo(sx + this.w - 6, sy + 22);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+    }
+}
+
+// Hazard helpers
+const PF_HAZARD = {
+    NONE: 0,
+    SPIKES: 1,
+    GAS: 2
+};
+
+// Enemy config
+const PF_ENEMY = {
+    WALK_SPEED: 70,   // px/s
+    GRAVITY: 2000
+};
+
+class PF_Enemy {
+    constructor(x, y, w = 24, h = 24) {
+        this.x = x; this.y = y; this.w = w; this.h = h;
+        this.vx = 0; this.vy = 0;
+        this.onGround = false;
+        this.alive = true;
+        this.color = '#C23B22';
+    }
+    update(dt, map) {}
+    render(ctx, camera) {
+        if (!this.alive) return;
+        const sx = Math.floor(this.x - camera.x);
+        const sy = Math.floor(this.y - camera.y);
+        ctx.fillStyle = this.color;
+        ctx.fillRect(sx, sy, this.w, this.h);
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(sx, sy, this.w, this.h);
+    }
+}
+
+class PF_PatrolEnemy extends PF_Enemy {
+    constructor(x, y, rangePx = 200, dir = 1) {
+        super(x, y, 24, 24);
+        this.speed = PF_ENEMY.WALK_SPEED;
+        this.dir = Math.sign(dir) || 1;
+        this.minX = x - rangePx;
+        this.maxX = x + rangePx;
+    }
+    update(dt, map) {
+        if (!this.alive) return;
+        // Horizontal intent
+        this.vx = this.dir * this.speed;
+        // Gravity
+        this.vy += PF_ENEMY.GRAVITY * dt;
+        // Move axis
+        this._moveAxis(dt, map, true);
+        this._moveAxis(dt, map, false);
+
+        // Reverse at range bounds
+        if (this.x < this.minX) { this.x = this.minX; this.dir = 1; }
+        if (this.x + this.w > this.maxX) { this.x = this.maxX - this.w; this.dir = -1; }
+    }
+    _moveAxis(dt, map, isX) {
+        const ts = map.tileSize;
+        const half = 0.001;
+        let nx = this.x + (isX ? this.vx * dt : 0);
+        let ny = this.y + (!isX ? this.vy * dt : 0);
+
+        if (isX) {
+            if (this.vx > 0) {
+                const right = Math.floor((nx + this.w) / ts);
+                const top = Math.floor(this.y / ts);
+                const bottom = Math.floor((this.y + this.h - half) / ts);
+                for (let ty = top; ty <= bottom; ty++) {
+                    if (map.isSolidTile(right, ty)) { nx = right * ts - this.w; this.dir = -1; break; }
+                }
+            } else if (this.vx < 0) {
+                const left = Math.floor(nx / ts);
+                const top = Math.floor(this.y / ts);
+                const bottom = Math.floor((this.y + this.h - half) / ts);
+                for (let ty = top; ty <= bottom; ty++) {
+                    if (map.isSolidTile(left, ty)) { nx = (left + 1) * ts; this.dir = 1; break; }
+                }
+            }
+            this.x = nx;
+        } else {
+            this.onGround = false;
+            if (this.vy > 0) {
+                const bottom = Math.floor((ny + this.h) / ts);
+                const left = Math.floor(this.x / ts);
+                const right = Math.floor((this.x + this.w - half) / ts);
+                for (let tx = left; tx <= right; tx++) {
+                    if (map.isSolidTile(tx, bottom)) { ny = bottom * ts - this.h; this.vy = 0; this.onGround = true; break; }
+                }
+            } else if (this.vy < 0) {
+                const top = Math.floor(ny / ts);
+                const left = Math.floor(this.x / ts);
+                const right = Math.floor((this.x + this.w - half) / ts);
+                for (let tx = left; tx <= right; tx++) {
+                    if (map.isSolidTile(tx, top)) { ny = (top + 1) * ts; this.vy = 0; break; }
+                }
+            }
+            this.y = ny;
+        }
+    }
+    render(ctx, camera) {
+        this.color = '#8B0000';
+        super.render(ctx, camera);
+        // eyes
+        const sx = Math.floor(this.x - camera.x);
+        const sy = Math.floor(this.y - camera.y);
+        ctx.fillStyle = '#FFF';
+        ctx.fillRect(sx + 6, sy + 6, 4, 4);
+        ctx.fillRect(sx + this.w - 10, sy + 6, 4, 4);
+    }
+}
+
+class PF_Player {
+    constructor(x, y) {
+        this.w = 26;
+        this.h = 30;
+        this.x = x;
+        this.y = y;
+        this.vx = 0;
+        this.vy = 0;
+        this.onGround = false;
+        this.coyote = 0;
+        this.jumpBuf = 0;
+        this.color = '#FF6B35';
+
+        // 파워업 상태
+        this.powerUps = {
+            mask: { active: false, timer: 0 },
+            gas_mask: { active: false, timer: 0 },
+            boots: { active: false, timer: 0 },
+            umbrella: { active: false, uses: 0 }
+        };
+    }
+
+    update(dt, input, map) {
+        // 입력 처리
+        const left = input.isLeft();
+        const right = input.isRight();
+        const want = (left ? -1 : 0) + (right ? 1 : 0);
+
+        if (input.jumpDown()) this.jumpBuf = PF_CONFIG.JUMP_BUFFER;
+
+        // 부츠 효과: 가속/최속 강화
+        const accel = PF_CONFIG.RUN_ACCEL * (this.powerUps.boots.active ? 1.2 : 1.0);
+        const maxRun = PF_CONFIG.MAX_RUN_SPEED * (this.powerUps.boots.active ? 1.25 : 1.0);
+
+        // 수평 가속/마찰
+        if (want !== 0) {
+            this.vx += want * accel * dt;
+        } else {
+            const fric = (this.onGround ? PF_CONFIG.RUN_FRICTION : PF_CONFIG.AIR_FRICTION) * dt;
+            if (Math.abs(this.vx) <= fric) this.vx = 0; else this.vx -= Math.sign(this.vx) * fric;
+        }
+        // 속도 클램프
+        this.vx = Math.max(-maxRun, Math.min(maxRun, this.vx));
+
+        // 점프 (코요테 + 버퍼)
+        const jumpSpeed = PF_CONFIG.JUMP_SPEED * (this.powerUps.boots.active ? 1.12 : 1.0);
+        if (this.jumpBuf > 0 && (this.onGround || this.coyote > 0)) {
+            this.vy = -jumpSpeed;
+            this.onGround = false;
+            this.coyote = 0;
+            this.jumpBuf = 0;
+        }
+        // 가변 점프
+        if (input.jumpUp() && this.vy < 0) {
+            this.vy *= 0.5;
+        }
+
+        // 중력
+        this.vy += PF_CONFIG.GRAVITY * dt;
+
+        // 이동 & 충돌 (X축)
+        this._moveAxis(dt, map, true);
+        // 이동 & 충돌 (Y축)
+        this._moveAxis(dt, map, false);
+
+        // 타이머 업데이트
+        this.coyote = this.onGround ? PF_CONFIG.COYOTE_TIME : Math.max(0, this.coyote - dt);
+        this.jumpBuf = Math.max(0, this.jumpBuf - dt);
+
+        // 파워업 타이머 업데이트
+        this.updatePowerUpTimers(dt);
+    }
+
+    _moveAxis(dt, map, isX) {
+        const ts = map.tileSize;
+        let nx = this.x + (isX ? this.vx * dt : 0);
+        let ny = this.y + (!isX ? this.vy * dt : 0);
+
+        const half = 0.001; // 작은 여유값
+        if (isX) {
+            if (this.vx > 0) {
+                // 오른쪽 이동 — 오른쪽 변의 타일 검사
+                const right = Math.floor((nx + this.w) / ts);
+                const top = Math.floor(this.y / ts);
+                const bottom = Math.floor((this.y + this.h - half) / ts);
+                for (let ty = top; ty <= bottom; ty++) {
+                    if (map.isSolidTile(right, ty)) {
+                        nx = right * ts - this.w; this.vx = 0; break;
+                    }
+                }
+            } else if (this.vx < 0) {
+                const left = Math.floor(nx / ts);
+                const top = Math.floor(this.y / ts);
+                const bottom = Math.floor((this.y + this.h - half) / ts);
+                for (let ty = top; ty <= bottom; ty++) {
+                    if (map.isSolidTile(left, ty)) {
+                        nx = (left + 1) * ts; this.vx = 0; break;
+                    }
+                }
+            }
+            this.x = nx;
+        } else {
+            this.onGround = false;
+            if (this.vy > 0) {
+                const bottom = Math.floor((ny + this.h) / ts);
+                const left = Math.floor(this.x / ts);
+                const right = Math.floor((this.x + this.w - half) / ts);
+                for (let tx = left; tx <= right; tx++) {
+                    if (map.isSolidTile(tx, bottom)) {
+                        ny = bottom * ts - this.h; this.vy = 0; this.onGround = true; break;
+                    }
+                }
+            } else if (this.vy < 0) {
+                const top = Math.floor(ny / ts);
+                const left = Math.floor(this.x / ts);
+                const right = Math.floor((this.x + this.w - half) / ts);
+                for (let tx = left; tx <= right; tx++) {
+                    if (map.isSolidTile(tx, top)) {
+                        ny = (top + 1) * ts; this.vy = 0; break;
+                    }
+                }
+            }
+            this.y = ny;
+        }
+    }
+
+    render(ctx, camera) {
+        ctx.fillStyle = this.color;
+        ctx.fillRect(Math.floor(this.x - camera.x), Math.floor(this.y - camera.y), this.w, this.h);
+        // 간단 얼굴
+        ctx.fillStyle = '#333';
+        ctx.fillRect(Math.floor(this.x - camera.x + 6), Math.floor(this.y - camera.y + 6), 4, 4);
+        ctx.fillRect(Math.floor(this.x - camera.x + 16), Math.floor(this.y - camera.y + 6), 4, 4);
+    }
+
+    applyPowerUp(type) {
+        switch (type) {
+            case 'mask':
+                this.powerUps.mask.active = true;
+                this.powerUps.mask.timer = 10000; // ms
+                break;
+            case 'gas_mask':
+                this.powerUps.gas_mask.active = true;
+                this.powerUps.gas_mask.timer = 20000; // ms
+                break;
+            case 'boots':
+                this.powerUps.boots.active = true;
+                this.powerUps.boots.timer = 15000; // ms
+                break;
+            case 'umbrella':
+                this.powerUps.umbrella.active = true;
+                this.powerUps.umbrella.uses += 1; // 누적 가능
+                break;
+        }
+    }
+
+    updatePowerUpTimers(dt) {
+        const dms = dt * 1000;
+        // 시간형 파워업 감소
+        if (this.powerUps.mask.active) {
+            this.powerUps.mask.timer -= dms;
+            if (this.powerUps.mask.timer <= 0) this.powerUps.mask.active = false;
+        }
+        if (this.powerUps.gas_mask.active) {
+            this.powerUps.gas_mask.timer -= dms;
+            if (this.powerUps.gas_mask.timer <= 0) this.powerUps.gas_mask.active = false;
+        }
+        if (this.powerUps.boots.active) {
+            this.powerUps.boots.timer -= dms;
+            if (this.powerUps.boots.timer <= 0) this.powerUps.boots.active = false;
+        }
+    }
+}
+
+// 파워업 엔티티
+class PF_PowerUp {
+    constructor(x, y, type) {
+        this.type = type;
+        this.w = 24; this.h = 24;
+        // x,y는 월드 중심 좌표로 가정 → 좌상단 보정
+        this.x = x - this.w / 2;
+        this.y = y - this.h / 2;
+        this.bob = Math.random() * Math.PI * 2;
+    }
+    update(dt) { this.bob += dt * 4; }
+    render(ctx, camera) {
+        const sx = Math.floor(this.x - camera.x);
+        const sy = Math.floor(this.y - camera.y + Math.sin(this.bob) * 2);
+        const colorMap = { mask: '#00BFFF', umbrella: '#FF1493', boots: '#FF4500', gas_mask: '#32CD32' };
+        const symMap = { mask: 'M', umbrella: 'U', boots: 'B', gas_mask: 'G' };
+        ctx.save();
+        ctx.shadowColor = colorMap[this.type] || '#fff';
+        ctx.shadowBlur = 10;
+        ctx.fillStyle = colorMap[this.type] || '#fff';
+        ctx.fillRect(sx, sy, this.w, this.h);
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = '#FFF'; ctx.lineWidth = 2; ctx.strokeRect(sx, sy, this.w, this.h);
+        ctx.fillStyle = '#FFF'; ctx.font = '16px Arial'; ctx.textAlign = 'center';
+        ctx.fillText(symMap[this.type] || '?', sx + this.w/2, sy + this.h/2 + 6);
+        ctx.restore();
+    }
+}
+
+class PlatformerGame {
+    constructor() {
+        this.canvas = document.getElementById('gameCanvas');
+        this.ctx = this.canvas.getContext('2d');
+        this.state = PF_STATE.MENU;
+        this.input = new PF_Input();
+        this.health = 100;
+        this.score = 0;
+        this.coins = [];
+        this.collectedCoins = 0;
+        this.goal = null;
+        this.spikes = [];
+        this.gasZones = [];
+        this.iframes = 0; // 무적 시간(피격 후 짧게)
+        this.enemies = [];
+        this.powerUps = [];
+
+        // 레벨 구성 (짧은 레벨 여러 개)
+        this.levels = ['levels/level1.json', 'levels/level2.json'];
+        this.levelIndex = 0;
+
+        // 루프 관련
+        this.lastTime = 0;
+        this.acc = 0;
+        this.fixed = 1 / 60;
+
+        // 월드
+        this.map = null;
+        this.player = null;
+        this.camera = null;
+
+        // UI
+        this._bindUI();
+        this._updateHUD();
+
+        // 레벨 로드
+        this._loadLevelByIndex(0);
+
+        // 루프 시작
+        requestAnimationFrame((t) => this._loop(t));
+    }
+
+    _bindUI() {
+        document.getElementById('startBtn').addEventListener('click', () => this.start());
+        document.getElementById('pauseBtn').addEventListener('click', () => this.togglePause());
+        document.getElementById('restartBtn').addEventListener('click', () => this.restart());
+        document.getElementById('playAgainBtn').addEventListener('click', () => {
+            this.levelIndex = 0;
+            this._loadLevelByIndex(0).then(() => this.start());
+        });
+    }
+
+    async _loadLevel(url) {
+        try {
+            const res = await fetch(url);
+            const data = await res.json();
+            this.map = new PF_TileMap(data);
+            const ts = this.map.tileSize;
+            const spawn = data.entities?.player || { x: 2, y: this.map.height - 5 };
+            this.player = new PF_Player(spawn.x * ts + 3, spawn.y * ts - 2);
+            this.camera = new PF_Camera(PF_CONFIG.WIDTH, PF_CONFIG.HEIGHT, this.map);
+            // 엔티티 파싱
+            this.coins = [];
+            this.collectedCoins = 0;
+            const coinTiles = data.entities?.coins || [];
+            for (const c of coinTiles) {
+                const cx = (c.x ?? c[0]) * ts + ts / 2;
+                const cy = (c.y ?? c[1]) * ts + ts / 2;
+                this.coins.push(new PF_Coin(cx, cy));
+            }
+            const goal = data.entities?.goal;
+            // goal.y는 바닥 타일 높이라고 가정 → 깃발 높이 2타일, 상단-좌표 = (y-2)타일
+            this.goal = goal ? new PF_Goal(goal.x * ts, (goal.y - 2) * ts, ts, ts * 2) : null;
+
+            // 해저드 파싱 (스파이크 라인, 가스 존)
+            this.spikes = [];
+            const spikes = data.entities?.spikes || [];
+            for (const s of spikes) {
+                const sx = (s.x ?? 0) * ts;
+                const sy = (s.y ?? 0) * ts;
+                const sw = (s.w ?? 1) * ts;
+                const sh = ts; // 1타일 높이
+                this.spikes.push({ x: sx, y: sy, w: sw, h: sh });
+            }
+            this.gasZones = [];
+            const gas = data.entities?.gas || data.entities?.gasZones || [];
+            for (const g of gas) {
+                const gx = (g.x ?? 0) * ts;
+                const gy = (g.y ?? 0) * ts;
+                const gw = (g.w ?? 1) * ts;
+                const gh = (g.h ?? 1) * ts;
+                this.gasZones.push({ x: gx, y: gy, w: gw, h: gh });
+            }
+
+            // 적 파싱
+            this.enemies = [];
+            const enemies = data.entities?.enemies || [];
+            for (const e of enemies) {
+                const type = e.type || 'patrol';
+                if (type === 'patrol') {
+                    const ex = (e.x ?? 0) * ts;
+                    const ey = (e.y ?? 0) * ts - 24; // 살짝 위에서 시작해 떨어지도록
+                    const rangePx = (e.range ?? 6) * ts;
+                    const dir = e.dir ?? 1;
+                    this.enemies.push(new PF_PatrolEnemy(ex, ey, rangePx, dir));
+                }
+            }
+            // 파워업 파싱
+            this.powerUps = [];
+            const pows = data.entities?.powerUps || [];
+            for (const p of pows) {
+                const type = p.type || 'boots';
+                const px = (p.x ?? 0) * ts + ts / 2;
+                const py = (p.y ?? 0) * ts + ts / 2;
+                this.powerUps.push(new PF_PowerUp(px, py, type));
+            }
+
+            this._renderOnceMenu();
+        } catch (e) {
+            console.error('레벨 로드 실패', e);
+        }
+    }
+
+    async _loadLevelByIndex(i) {
+        this.levelIndex = i;
+        await this._loadLevel(this.levels[i]);
+        this.state = PF_STATE.MENU;
+        this._updateHUD();
+    }
+
+    start() {
+        if (!this.map) return;
+        this.state = PF_STATE.PLAYING;
+        this.health = 100;
+        // 점수는 누적 유지
+        document.getElementById('gameOverScreen').classList.add('hidden');
+        const overTitle = document.querySelector('#gameOverScreen h2');
+        if (overTitle) overTitle.textContent = '게임 오버!';
+        this._updateHUD();
+    }
+
+    togglePause() {
+        if (this.state === PF_STATE.PLAYING) this.state = PF_STATE.PAUSED;
+        else if (this.state === PF_STATE.PAUSED) this.state = PF_STATE.PLAYING;
+    }
+
+    restart() {
+        this._loadLevelByIndex(this.levelIndex).then(() => this.start());
+    }
+
+    gameOver() {
+        this.state = PF_STATE.GAME_OVER;
+        document.getElementById('finalScore').textContent = this.score;
+        document.getElementById('gameOverScreen').classList.remove('hidden');
+    }
+
+    win() {
+        this.state = PF_STATE.GAME_OVER; // 동일 오버레이 재사용
+        const overTitle = document.querySelector('#gameOverScreen h2');
+        if (overTitle) overTitle.textContent = '게임 클리어!';
+        document.getElementById('finalScore').textContent = this.score;
+        document.getElementById('gameOverScreen').classList.remove('hidden');
+    }
+
+    _updateHUD() {
+        const scoreEl = document.getElementById('score');
+        const healthEl = document.getElementById('health');
+        const coinsEl = document.getElementById('coins');
+        const levelEl = document.getElementById('level');
+        const powEl = document.getElementById('powerups');
+        if (scoreEl) scoreEl.textContent = `점수: ${this.score}`;
+        if (healthEl) healthEl.textContent = `체력: ${this.health}`;
+        if (coinsEl) coinsEl.textContent = `코인: ${this.collectedCoins}`;
+        if (levelEl) levelEl.textContent = `레벨: ${this.levelIndex + 1}`;
+        if (powEl) powEl.textContent = `파워업: ${this._powerupText()}`;
+    }
+
+    _powerupText() {
+        if (!this.player) return '-';
+        const p = this.player.powerUps;
+        const parts = [];
+        if (p.umbrella.uses > 0) parts.push(`U×${p.umbrella.uses}`);
+        if (p.boots.active) parts.push(`B ${Math.ceil(p.boots.timer/1000)}s`);
+        if (p.mask.active) parts.push(`M ${Math.ceil(p.mask.timer/1000)}s`);
+        if (p.gas_mask.active) parts.push(`G ${Math.ceil(p.gas_mask.timer/1000)}s`);
+        return parts.length ? parts.join(' | ') : '-';
+    }
+
+    _loop(current) {
+        const now = current / 1000;
+        let dt = this.lastTime ? now - this.lastTime : 0;
+        if (dt > 0.25) dt = 0.25; // 스파이크 방지
+        this.lastTime = now;
+        this.acc += dt;
+
+        while (this.acc >= this.fixed) {
+            this.input.resetJusts();
+            this._update(this.fixed);
+            this.acc -= this.fixed;
+        }
+        this._render();
+        requestAnimationFrame((t) => this._loop(t));
+    }
+
+    _update(dt) {
+        if (this.state !== PF_STATE.PLAYING) return;
+        if (!this.map || !this.player) return;
+
+        this.player.update(dt, this.input, this.map);
+        this.camera.follow(this.player.x, this.player.y);
+
+        // 적/파워업 업데이트
+        for (const en of this.enemies) en.update(dt, this.map);
+        for (const pu of this.powerUps) pu.update(dt);
+        this._checkEnemyCollisions();
+
+        // 해저드 체크
+        this._checkHazards(dt);
+
+        // 코인 수집
+        for (let i = this.coins.length - 1; i >= 0; i--) {
+            const c = this.coins[i];
+            if (this._aabb(this.player.x, this.player.y, this.player.w, this.player.h, c.x, c.y, c.w, c.h)) {
+                this.coins.splice(i, 1);
+                this.collectedCoins += 1;
+                this.score += 10; // 코인 점수
+                this._updateHUD();
+            }
+        }
+
+        // 파워업 수집
+        for (let i = this.powerUps.length - 1; i >= 0; i--) {
+            const p = this.powerUps[i];
+            if (this._aabb(this.player.x, this.player.y, this.player.w, this.player.h, p.x, p.y, p.w, p.h)) {
+                this.player.applyPowerUp(p.type);
+                this.powerUps.splice(i, 1);
+                this.score += 20;
+                this._updateHUD();
+            }
+        }
+
+        // 골 도달 → 다음 레벨
+        if (this.goal && this._aabb(this.player.x, this.player.y, this.player.w, this.player.h, this.goal.x, this.goal.y, this.goal.w, this.goal.h)) {
+            this.state = PF_STATE.LEVEL_COMPLETE;
+            this.score += 100; // 클리어 보너스
+            this._updateHUD();
+            setTimeout(() => this.nextLevel(), 600);
+            return;
+        }
+
+        // 낙하사 (지도 밖으로 떨어지면 체력 0)
+        const worldH = this.map.height * this.map.tileSize;
+        if (this.player.y > worldH + 200) {
+            this.health = 0;
+            this._updateHUD();
+            this.gameOver();
+        }
+    }
+
+    _drawBackground() {
+        // 하늘 그라디언트
+        const g = this.ctx.createLinearGradient(0, 0, 0, PF_CONFIG.HEIGHT);
+        g.addColorStop(0, '#87CEEB');
+        g.addColorStop(0.7, '#FFA07A');
+        g.addColorStop(1, '#228B22');
+        this.ctx.fillStyle = g;
+        this.ctx.fillRect(0, 0, PF_CONFIG.WIDTH, PF_CONFIG.HEIGHT);
+
+        // 간단 패럴랙스 건물 (카메라의 절반 속도)
+        const parallaxX = Math.floor(this.camera ? this.camera.x * 0.5 : 0);
+        const rng = [
+            { w: 80, h: 220, c: '#696969' },
+            { w: 60, h: 260, c: '#708090' },
+            { w: 90, h: 240, c: '#778899' },
+            { w: 70, h: 280, c: '#696969' }
+        ];
+        let x = - (parallaxX % 200) - 200;
+        while (x < PF_CONFIG.WIDTH + 200) {
+            rng.forEach(b => {
+                this.ctx.fillStyle = b.c;
+                this.ctx.fillRect(x, PF_CONFIG.HEIGHT - b.h - 100, b.w, b.h);
+                x += b.w + 30;
+            });
+            x += 100;
+        }
+    }
+
+    _renderOnceMenu() {
+        this._drawBackground();
+        // 지면 띠
+        this.ctx.fillStyle = '#8B4513';
+        this.ctx.fillRect(0, PF_CONFIG.HEIGHT - 100, PF_CONFIG.WIDTH, 100);
+
+        if (this.map) this.map.render(this.ctx, new PF_Camera(PF_CONFIG.WIDTH, PF_CONFIG.HEIGHT, this.map));
+        if (this.player) this.player.render(this.ctx, { x: 0, y: 0 });
+
+        // 메뉴 텍스트 오버레이는 기존 render에서 처리
+    }
+
+    _render() {
+        this._drawBackground();
+
+        // 지면 띠 (전경용)
+        this.ctx.fillStyle = '#8B4513';
+        this.ctx.fillRect(0, PF_CONFIG.HEIGHT - 100, PF_CONFIG.WIDTH, 100);
+
+        if (this.map && this.camera) this.map.render(this.ctx, this.camera);
+        // 해저드 렌더링 (플레이어 아래에)
+        this._renderHazards();
+        if (this.goal && this.camera) this.goal.render(this.ctx, this.camera);
+        if (this.powerUps && this.camera) this.powerUps.forEach(p => p.render(this.ctx, this.camera));
+        if (this.enemies && this.camera) this.enemies.forEach(en => en.render(this.ctx, this.camera));
+        if (this.coins && this.camera) this.coins.forEach(c => c.render(this.ctx, this.camera));
+        if (this.player && this.camera) this.player.render(this.ctx, this.camera);
+
+        if (this.state === PF_STATE.PAUSED) {
+            this.ctx.fillStyle = 'rgba(0,0,0,0.7)';
+            this.ctx.fillRect(0, 0, PF_CONFIG.WIDTH, PF_CONFIG.HEIGHT);
+            this.ctx.fillStyle = 'white';
+            this.ctx.font = '48px Arial';
+            this.ctx.textAlign = 'center';
+            this.ctx.fillText('일시정지', PF_CONFIG.WIDTH / 2, PF_CONFIG.HEIGHT / 2);
+        } else if (this.state === PF_STATE.MENU) {
+            this.ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+            this.ctx.fillRect(0, 0, PF_CONFIG.WIDTH, PF_CONFIG.HEIGHT);
+            this.ctx.fillStyle = 'white';
+            this.ctx.font = '36px Arial';
+            this.ctx.textAlign = 'center';
+            this.ctx.fillText('시작 버튼을 눌러주세요!', PF_CONFIG.WIDTH / 2, PF_CONFIG.HEIGHT / 2);
+        } else if (this.state === PF_STATE.LEVEL_COMPLETE) {
+            this.ctx.fillStyle = 'rgba(0,0,0,0.5)';
+            this.ctx.fillRect(0, 0, PF_CONFIG.WIDTH, PF_CONFIG.HEIGHT);
+            this.ctx.fillStyle = 'white';
+            this.ctx.font = '36px Arial';
+            this.ctx.textAlign = 'center';
+            this.ctx.fillText('레벨 클리어!', PF_CONFIG.WIDTH / 2, PF_CONFIG.HEIGHT / 2);
+        }
+
+        this.ctx.textAlign = 'left';
+    }
+
+    _aabb(ax, ay, aw, ah, bx, by, bw, bh) {
+        return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+    }
+
+    nextLevel() {
+        if (this.levelIndex + 1 < this.levels.length) {
+            this._loadLevelByIndex(this.levelIndex + 1).then(() => this.start());
+        } else {
+            this.win();
+        }
+    }
+
+    _checkEnemyCollisions() {
+        if (this.iframes > 0) return; // 피격 무적 중에는 스킵 (스톰프는 허용 가능하지만 단순화)
+        for (let i = this.enemies.length - 1; i >= 0; i--) {
+            const e = this.enemies[i];
+            if (!e.alive) continue;
+            if (this._aabb(this.player.x, this.player.y, this.player.w, this.player.h, e.x, e.y, e.w, e.h)) {
+                const fromAbove = (this.player.vy > 0) && ((this.player.y + this.player.h) - e.y < 10);
+                if (fromAbove) {
+                    // 스톰프: 적 제거 + 점수 + 바운스
+                    e.alive = false;
+                    this.enemies.splice(i, 1);
+                    this.score += 30;
+                    this.player.vy = -PF_CONFIG.JUMP_SPEED * 0.55;
+                    this._updateHUD();
+                } else {
+                    // 접촉 피해
+                    this._damage(25, 'enemy');
+                    this.iframes = 0.6;
+                    // 살짝 튕겨내기
+                    const pcx = this.player.x + this.player.w / 2;
+                    const ecx = e.x + e.w / 2;
+                    const dir = pcx < ecx ? -1 : 1;
+                    this.player.vx = dir * PF_CONFIG.MAX_RUN_SPEED * 0.6;
+                    this.player.vy = -PF_CONFIG.JUMP_SPEED * 0.35;
+                }
+            }
+        }
+    }
+
+    _checkHazards(dt) {
+        // 피격 무적 감소
+        if (this.iframes > 0) this.iframes = Math.max(0, this.iframes - dt);
+
+        // Gas: 영역 안에 있으면 지속 데미지
+        let inGas = false;
+        for (const g of this.gasZones) {
+            if (this._aabb(this.player.x, this.player.y, this.player.w, this.player.h, g.x, g.y, g.w, g.h)) {
+                inGas = true; break;
+            }
+        }
+        if (inGas) {
+            let dps = 15;
+            if (this.player.powerUps.gas_mask.active) dps = 0;
+            else if (this.player.powerUps.mask.active) dps *= 0.4;
+            if (dps > 0) this._damage(dps * dt, 'gas');
+        }
+
+        // Spikes: 닿는 즉시 큰 데미지 (상단 14px 밴드만 유효)
+        if (this.iframes <= 0) {
+            for (const s of this.spikes) {
+                const bandH = 14;
+                const bx = s.x;
+                const by = s.y + (s.h - bandH);
+                const bw = s.w;
+                const bh = bandH;
+                if (this._aabb(this.player.x, this.player.y, this.player.w, this.player.h, bx, by, bw, bh)) {
+                    this._damage(35, 'spikes');
+                    this.iframes = 0.6;
+                    break;
+                }
+            }
+        }
+    }
+
+    _damage(amount, type) {
+        if (this.state !== PF_STATE.PLAYING) return;
+        // 우산: 1회 피해 무시
+        if (this.player.powerUps.umbrella.active && this.player.powerUps.umbrella.uses > 0) {
+            this.player.powerUps.umbrella.uses -= 1;
+            if (this.player.powerUps.umbrella.uses <= 0) this.player.powerUps.umbrella.active = false;
+            this.iframes = Math.max(this.iframes, 0.4);
+            this._updateHUD();
+            return;
+        }
+        this.health = Math.max(0, this.health - amount);
+        this._updateHUD();
+        if (this.health <= 0) this.gameOver();
+    }
+
+    _renderHazards() {
+        if (!this.camera) return;
+        const ctx = this.ctx;
+        // Spikes
+        ctx.save();
+        ctx.fillStyle = '#AA3333';
+        for (const s of this.spikes) {
+            const tiles = Math.max(1, Math.floor(s.w / PF_CONFIG.TILE));
+            for (let i = 0; i < tiles; i++) {
+                const x0 = s.x + i * PF_CONFIG.TILE - this.camera.x;
+                const y0 = s.y - this.camera.y;
+                const w = PF_CONFIG.TILE;
+                const h = PF_CONFIG.TILE;
+                ctx.beginPath();
+                ctx.moveTo(x0, y0 + h);
+                ctx.lineTo(x0 + w / 2, y0 + h - 16);
+                ctx.lineTo(x0 + w, y0 + h);
+                ctx.closePath();
+                ctx.fill();
+                ctx.strokeStyle = '#5c1f1f';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(x0, y0 + h);
+                ctx.lineTo(x0 + w, y0 + h);
+                ctx.stroke();
+            }
+        }
+        ctx.restore();
+
+        // Gas zones
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        for (const g of this.gasZones) {
+            const sx = g.x - this.camera.x;
+            const sy = g.y - this.camera.y;
+            const grad = ctx.createLinearGradient(0, sy, 0, sy + g.h);
+            grad.addColorStop(0, '#7CFC00');
+            grad.addColorStop(1, '#228B22');
+            ctx.fillStyle = grad;
+            ctx.fillRect(sx, sy, g.w, g.h);
+        }
+        ctx.restore();
+    }
+}
+
+// 게임 시작 (플랫폼어)
 document.addEventListener('DOMContentLoaded', () => {
-    new Game();
+    new PlatformerGame();
 });
