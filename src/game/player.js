@@ -1,4 +1,5 @@
 import { PF_CONFIG } from './constants.js';
+import { getAsset } from '../engine/assets.js';
 
 export class PF_Player {
   constructor(x, y) {
@@ -70,11 +71,18 @@ export class PF_Player {
     }
   }
   render(ctx, camera) {
-    ctx.fillStyle = this.color;
-    ctx.fillRect(Math.floor(this.x - camera.x), Math.floor(this.y - camera.y), this.w, this.h);
-    ctx.fillStyle = '#333';
-    ctx.fillRect(Math.floor(this.x - camera.x + 6), Math.floor(this.y - camera.y + 6), 4, 4);
-    ctx.fillRect(Math.floor(this.x - camera.x + 16), Math.floor(this.y - camera.y + 6), 4, 4);
+    const img = getAsset('player');
+    const sx = Math.floor(this.x - camera.x);
+    const sy = Math.floor(this.y - camera.y);
+    if (img) {
+      ctx.drawImage(img, sx, sy, this.w, this.h);
+    } else {
+      ctx.fillStyle = this.color;
+      ctx.fillRect(sx, sy, this.w, this.h);
+      ctx.fillStyle = '#333';
+      ctx.fillRect(sx + 6, sy + 6, 4, 4);
+      ctx.fillRect(sx + 16, sy + 6, 4, 4);
+    }
   }
   applyPowerUp(type) {
     switch (type) {

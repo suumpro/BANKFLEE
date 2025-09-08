@@ -2,6 +2,7 @@ import { PF_CONFIG, PF_STATE, aabb } from './constants.js';
 import { AudioManager } from '../engine/audio.js';
 import { PF_Input } from '../engine/input.js';
 import { loadProfile, recordRun, updatePlayerName, addCredits, getUpgradesState, purchaseUpgrade, UPGRADE_DEFS, getDifficulty, setDifficulty, getSettings, setMuted } from '../engine/storage.js';
+import { getAsset } from '../engine/assets.js';
 
 class TD_Player {
   constructor(x, y) {
@@ -102,20 +103,25 @@ class TD_Player {
     ctx.fill();
     ctx.restore();
     // body lifted by z
-    ctx.fillStyle = this.color;
     const spMul = this.speedMultiplier();
     const bodyX = Math.floor(this.x);
     const bodyY = Math.floor(this.y - this.z);
-    ctx.fillRect(bodyX, bodyY, this.w, this.h);
-    if (spMul > 1.01) {
-      ctx.save(); ctx.globalAlpha = 0.25; ctx.fillStyle = '#FFB085';
-      ctx.fillRect(bodyX - 2, bodyY + 4, this.w + 4, this.h - 8);
-      ctx.restore();
+    const img = getAsset('player');
+    if (img) {
+      ctx.drawImage(img, bodyX, bodyY, this.w, this.h);
+    } else {
+      ctx.fillStyle = this.color;
+      ctx.fillRect(bodyX, bodyY, this.w, this.h);
+      if (spMul > 1.01) {
+        ctx.save(); ctx.globalAlpha = 0.25; ctx.fillStyle = '#FFB085';
+        ctx.fillRect(bodyX - 2, bodyY + 4, this.w + 4, this.h - 8);
+        ctx.restore();
+      }
+      // face
+      ctx.fillStyle = '#333';
+      ctx.fillRect(Math.floor(this.x + 6), Math.floor(this.y - this.z + 6), 4, 4);
+      ctx.fillRect(Math.floor(this.x + 16), Math.floor(this.y - this.z + 6), 4, 4);
     }
-    // face
-    ctx.fillStyle = '#333';
-    ctx.fillRect(Math.floor(this.x + 6), Math.floor(this.y - this.z + 6), 4, 4);
-    ctx.fillRect(Math.floor(this.x + 16), Math.floor(this.y - this.z + 6), 4, 4);
   }
 }
 
